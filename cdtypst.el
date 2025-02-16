@@ -1,3 +1,5 @@
+;; -*- lexical-binding: t; -*-
+
 (require 'typst-ts-mode)
 (require 'treesit)
 (require 'prog-mode)
@@ -17,15 +19,36 @@
   :group 'cdtypst
   :type '(boolean))
 
+(defcustom cdtypst-math-symbol-letter-alist
+  '((?a . "alpha")
+    (?b . "beta")
+    (?g . "gamma")
+    (?d . "delta")
+    (?e . "epsilon")
+    (?z . "zeta")
+    (?A . "Alpha")
+    (?B . "Beta"))
+  "Alist consisting of math letters and their typst symbol names."
+  :type '(alist :key character :value string))
+
+(defcustom cdtypst-math-symbol-operator-alist
+  '((?u . "union")
+    (?U . "union.big")
+    (?i . "sect")
+    (?I . "sect.big")
+    (?d . "delta"))
+  "Alist consisting of math operators and their typst symbol names."
+  :type '(alist :key character :value string))
+
 (defcustom cdtypst-math-modify-alist
-  '((?s . "sans")
-    (?f . "frak")
-    (?m . "mono")
-    (?b . "bb")
-    (?c . "cal"))
+  '((?s "sans")
+    (?f "frak")
+    (?m "mono")
+    (?b "bb")
+    (?c "cal"))
   "Alist with math variants."
   :group 'cdtypst
-  :type '(alist :key-type char :value-type string ))
+  :type '(alist :key character :value string))
 
 (defvar typst-prettify-symbols-alist nil
   "Alist containing all of the Unicode symbols for typst.")
@@ -167,35 +190,75 @@ reasonably expect that more input can be put in."
             ;; stop after closing bracket, unless ^_[( follow
             (throw 'stop t))))))))
 
+(defun cdtypst--process-symbol-alist (alist &optional insert-fn)
+  (mapcar (pcase-lambda (`(,letter . ,name))
+            (list (format "%c" letter)
+                  (let ((unicode (assoc name typst-prettify-symbols-alist)))
+                    (if unicode
+                        (format "%c (%s)" (cdr unicode) name)
+                      name))
+                  (lambda ()
+                    (interactive)
+                    (cdtypst--ensure-math)
+                    (funcall (or insert-fn #'insert) name))))
+          alist))
+
+(defun cdtypst--math-symbol-letter-setup (_)
+  (transient-parse-suffixes
+   'cdtypst--math-symbol-letter
+   (cdtypst--process-symbol-alist cdtypst-math-symbol-letter-alist)))
+
+(defun cdtypst--math-symbol-operator-setup (_)
+  (transient-parse-suffixes
+   'cdtypst--math-symbol-letter
+   (cdtypst--process-symbol-alist cdtypst-math-symbol-operator-alist)))
+
+(defun cdtypst--math-modify-setup (_)
+  (cl-labels ((insert-fn (variant)
+                (cond
+                 ((region-active-p)
+                  (pcase-let* ((`((,start . ,end) . ,_) (region-bounds))
+                               (start-marker (copy-marker start))
+                               (end-marker (copy-marker end)))
+                    (goto-char start-marker)
+                    (insert variant)
+                    (insert "(")
+                    (goto-char end-marker)
+                    (insert ")")))
+                 (t
+                  (insert variant)
+                  (insert "()")
+                  (backward-char)))))
+    (transient-parse-suffixes
+     'cdtypst--math-modify
+     (cdtypst--process-symbol-alist cdtypst-math-modify-alist
+                                    #'insert-fn))))
+
+(transient-define-prefix cdtypst--math-symbol-operator ()
+  ["Choose symbol"
+   :setup-children cdtypst--math-symbol-operator-setup])
+
+(transient-define-prefix cdtypst--math-symbol-letter ()
+  ["Choose symbol"
+   :setup-children cdtypst--math-symbol-letter-setup]
+  [("`" "Operator" cdtypst--math-symbol-operator)])
+
 (defun cdtypst-math-symbol ()
   (interactive)
-  (error "Not yet implemented"))
+  (cdtypst--math-symbol-letter))
+
+(transient-define-prefix cdtypst--math-modify ()
+  ["Choose variant"
+   :setup-children cdtypst--math-modify-setup])
 
 (defun cdtypst-math-modify ()
   "Modify previous char/group with math variant.
 If the character before point is white space, and empty variants call is
 inserted and the cursor positioned properly."
   (interactive)
-  (let ((variant (cdr (assoc (read-char-choice "Variant: " (mapcar #'car cdtypst-math-modify-alist))
-                             cdtypst-math-modify-alist))))
-    (cdtypst--ensure-math)
-    (cond
-     ((region-active-p)
-      (pcase-let* ((`((,start . ,end) . ,_) (region-bounds))
-                   (start-marker (copy-marker start))
-                   (end-marker (copy-marker end)))
-        (goto-char start-marker)
-        (insert variant)
-        (insert "(")
-        (goto-char end-marker)
-        (insert ")")))
-     (t
-      (insert variant)
-      (insert "()")
-      (backward-char)))))
+  (cdtypst--math-modify))
 
 ;; TODO: Render sub- and superscripts.
-;; TODO: Define transient to choose math symbol a la cdlatex's math prefix.
 
 (defun turn-on-cdtypst ()
   (interactive)
