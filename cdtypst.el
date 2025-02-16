@@ -260,12 +260,24 @@ inserted and the cursor positioned properly."
 
 ;; TODO: Render sub- and superscripts.
 
+(defun cdtypst--check-all-names-defined (names alist)
+  "Make sure all names defined in `names' are actually present in
+`typst-prettify-symbols-alist'. `alist' is used for reporting an error
+if a name is not found."
+  (pcase-dolist (`(,_ . ,name) names)
+    (unless (assoc name typst-prettify-symbols-alist)
+      (user-error "Symbol '%s' undefined (%s)" name alist))))
+
 (defun turn-on-cdtypst ()
   (interactive)
   (unless (eq major-mode 'typst-ts-mode)
     (user-error "Cannot enable cdtypst in non-typst buffer."))
   (cdtypst--compute-symbols)
   (setq-local prettify-symbols-alist typst-prettify-symbols-alist)
+  (cdtypst--check-all-names-defined cdtypst-math-symbol-letter-alist
+                                    'letter)
+  (cdtypst--check-all-names-defined cdtypst-math-symbol-operator-alist
+                                    'operator)
   (setq-local prettify-symbols-compose-predicate #'cdtypst--prettify-symbols-compose-predicate)
   (prettify-symbols-mode))
 
