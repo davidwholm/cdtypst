@@ -25,9 +25,7 @@
     (?g . "gamma")
     (?d . "delta")
     (?e . "epsilon")
-    (?z . "zeta")
-    (?A . "Alpha")
-    (?B . "Beta"))
+    (?z . "zeta"))
   "Alist consisting of math letters and their typst symbol names."
   :type '(alist :key character :value string))
 
@@ -35,20 +33,31 @@
   '((?u . "union")
     (?U . "union.big")
     (?i . "sect")
-    (?I . "sect.big")
-    (?d . "delta"))
+    (?I . "sect.big"))
   "Alist consisting of math operators and their typst symbol names."
   :type '(alist :key character :value string))
 
 (defcustom cdtypst-math-modify-alist
-  '((?s "sans")
-    (?f "frak")
-    (?m "mono")
-    (?b "bb")
-    (?c "cal"))
+  '((?s . "sans")
+    (?f . "frak")
+    (?m . "mono")
+    (?b . "bb")
+    (?c . "cal"))
   "Alist with math variants."
   :group 'cdtypst
   :type '(alist :key character :value string))
+
+(defcustom cdtypst-math-symbol-entity-alist
+  '((?0 . "emptyset"))
+  "Alist with math entities."
+  :group 'cdtypst
+  :type '(alist :key character :value string))
+
+(defcustom cdtypst-tab-hook (list #'cdtypst--tab-indent)
+  "A list of functions called by TAB before the default command is
+executed."
+  :group 'cdtypst
+  :type '(repeat (function :tag "Function" :value nil)))
 
 (defvar typst-prettify-symbols-alist nil
   "Alist containing all of the Unicode symbols for typst.")
@@ -60,17 +69,18 @@
 (defvar cdtypst--get-symbols-status nil
   "Indicates whether symbols have been regenerated this Emacs session.")
 
-(defun cdtypst--in-math-p (&optional node)
-  (let ((node (or node (treesit-node-at (point)))))
+(defun cdtypst--in-math-p (&optional point)
+  (let ((node (treesit-node-at (or point (point)))))
     (treesit-parent-until node "math")))
 
-(defun cdtypst--prettify-p (&optional node)
-  (let ((node (or node (treesit-node-at (point)))))
-    (and (cdtypst--in-math-p node)
-         (not (treesit-node-match-p node "\"")))))
+(defun cdtypst--prettify-p (&optional point)
+  (let* ((start (or point (point)))
+         (node (treesit-node-at start)))
+    (and (= start (treesit-node-start node))   ; Only prettify full symbols (not within),
+         (treesit-parent-until node "math")))) ; actually in math mode.
 
 (defun cdtypst--prettify-symbols-compose-predicate (start end match)
-  (cdtypst--prettify-p (treesit-node-at start)))
+  (cdtypst--prettify-p start))
 
 (defun cdtypst--compute-symbols (&optional force)
   (unless (and cdtypst--get-symbols-status
@@ -88,10 +98,11 @@
   "Insert ^() or _().
 When not in typst math mode, ^() and _() will have dollars."
   (interactive)
-  (cdtypst--ensure-math)
-  (insert (event-basic-type last-command-event))
-  (insert "()")
-  (backward-char))
+  (if (cdtypst--in-math-p)
+      (progn (insert (event-basic-type last-command-event))
+             (insert "()")
+             (backward-char))
+    (insert (event-basic-type last-command-event))))
 
 (defun cdtypst-dollar (&optional arg)
   "Insert a pair of dollars; with ARG, insert spaced dollars."
@@ -118,12 +129,6 @@ When not in typst math mode, ^() and _() will have dollars."
   (let ((point (point)))
     (typst-ts-mode-indent-line-function)
     (not (= point (point)))))
-
-(defcustom cdtypst-tab-hook (list #'cdtypst--tab-indent)
-  "A list of functions called by TAB before the default command is
-executed."
-  :group 'cdtypst
-  :type '(repeat (function :tag "Function" :value nil)))
 
 ;; Mostly taken as is from cdlatex-tab
 (defun cdtypst-tab ()
@@ -190,58 +195,83 @@ reasonably expect that more input can be put in."
             ;; stop after closing bracket, unless ^_[( follow
             (throw 'stop t))))))))
 
-(defun cdtypst--process-symbol-alist (alist &optional insert-fn)
+(defun cdtypst--apply-modifiers (args name)
+  name)
+
+(defun cdtypst--transient-parse-suffix (alist &optional insert-fn)
   (mapcar (pcase-lambda (`(,letter . ,name))
             (list (format "%c" letter)
                   (let ((unicode (assoc name typst-prettify-symbols-alist)))
-                    (if unicode
-                        (format "%c (%s)" (cdr unicode) name)
-                      name))
-                  (lambda ()
-                    (interactive)
+                    (if unicode (format "%c" (cdr unicode)) name))
+                  (lambda (args)
+                    (interactive (list (transient-args 'cdtypst--math-symbol-letter)))
                     (cdtypst--ensure-math)
-                    (funcall (or insert-fn #'insert) name))))
+                    (funcall (or insert-fn #'insert)
+                             (cdtypst--apply-modifiers args name)))))
           alist))
 
 (defun cdtypst--math-symbol-letter-setup (_)
   (transient-parse-suffixes
    'cdtypst--math-symbol-letter
-   (cdtypst--process-symbol-alist cdtypst-math-symbol-letter-alist)))
+   (cdtypst--transient-parse-suffix cdtypst-math-symbol-letter-alist)))
 
 (defun cdtypst--math-symbol-operator-setup (_)
   (transient-parse-suffixes
    'cdtypst--math-symbol-letter
-   (cdtypst--process-symbol-alist cdtypst-math-symbol-operator-alist)))
+   (cdtypst--transient-parse-suffix cdtypst-math-symbol-operator-alist)))
+
+(defun cdtypst--math-symbol-entity-setup (_)
+  (transient-parse-suffixes
+   'cdtypst--math-symbol-entity
+   (cdtypst--transient-parse-suffix cdtypst-math-symbol-entity-alist)))
+
+(defun cdtypst--math-modify-insert (variant)
+  (cond
+   ((region-active-p)
+    (pcase-let* ((`((,start . ,end) . ,_) (region-bounds))
+                 (start-marker (copy-marker start))
+                 (end-marker (copy-marker end)))
+      (goto-char start-marker)
+      (insert variant)
+      (insert "(")
+      (goto-char end-marker)
+      (insert ")")))
+   (t
+    (insert variant)
+    (insert "()")
+    (backward-char))))
 
 (defun cdtypst--math-modify-setup (_)
-  (cl-labels ((insert-fn (variant)
-                (cond
-                 ((region-active-p)
-                  (pcase-let* ((`((,start . ,end) . ,_) (region-bounds))
-                               (start-marker (copy-marker start))
-                               (end-marker (copy-marker end)))
-                    (goto-char start-marker)
-                    (insert variant)
-                    (insert "(")
-                    (goto-char end-marker)
-                    (insert ")")))
-                 (t
-                  (insert variant)
-                  (insert "()")
-                  (backward-char)))))
-    (transient-parse-suffixes
-     'cdtypst--math-modify
-     (cdtypst--process-symbol-alist cdtypst-math-modify-alist
-                                    #'insert-fn))))
+  (transient-parse-suffixes
+   'cdtypst--math-modify
+   (append (cdtypst--transient-parse-suffix cdtypst-math-modify-alist
+                                            #'cdtypst--math-modify-insert)
+           (list (list "'"
+                       "literal"
+                       (lambda ()
+                         (interactive)
+                         (insert "'")))))))
+
+(transient-define-prefix cdtypst--math-symbol-entity ()
+  ["Choose entity"
+   :class transient-column
+   :setup-children cdtypst--math-symbol-entity-setup])
 
 (transient-define-prefix cdtypst--math-symbol-operator ()
-  ["Choose symbol"
-   :setup-children cdtypst--math-symbol-operator-setup])
+  ["Choose operator"
+   :class transient-column
+   :setup-children cdtypst--math-symbol-operator-setup]
+  [("`" "Entity" cdtypst--math-symbol-entity
+    :transient transient--do-replace)])
 
 (transient-define-prefix cdtypst--math-symbol-letter ()
-  ["Choose symbol"
+  ["Modifiers"
+   ("-u" "uppercase" "--uppercase")]
+  ["Choose letter"
+   :class transient-column
    :setup-children cdtypst--math-symbol-letter-setup]
-  [("`" "Operator" cdtypst--math-symbol-operator)])
+  [("`" "Operator" cdtypst--math-symbol-operator
+    :transient transient--do-replace)])
 
 (defun cdtypst-math-symbol ()
   (interactive)
@@ -249,22 +279,21 @@ reasonably expect that more input can be put in."
 
 (transient-define-prefix cdtypst--math-modify ()
   ["Choose variant"
+   :class transient-column
    :setup-children cdtypst--math-modify-setup])
 
 (defun cdtypst-math-modify ()
   "Modify previous char/group with math variant.
-If the character before point is white space, and empty variants call is
+If the character before point is white space, an empty variants call is
 inserted and the cursor positioned properly."
   (interactive)
   (cdtypst--math-modify))
 
-;; TODO: Render sub- and superscripts.
-
-(defun cdtypst--check-all-names-defined (names alist)
-  "Make sure all names defined in `names' are actually present in
+(defun cdtypst--check-all-symbols-defined (syms alist)
+  "Make sure all names defined in `syms' are actually present in
 `typst-prettify-symbols-alist'. `alist' is used for reporting an error
 if a name is not found."
-  (pcase-dolist (`(,_ . ,name) names)
+  (pcase-dolist (`(,_ . ,name) syms)
     (unless (assoc name typst-prettify-symbols-alist)
       (user-error "Symbol '%s' undefined (%s)" name alist))))
 
@@ -274,10 +303,10 @@ if a name is not found."
     (user-error "Cannot enable cdtypst in non-typst buffer."))
   (cdtypst--compute-symbols)
   (setq-local prettify-symbols-alist typst-prettify-symbols-alist)
-  (cdtypst--check-all-names-defined cdtypst-math-symbol-letter-alist
-                                    'letter)
-  (cdtypst--check-all-names-defined cdtypst-math-symbol-operator-alist
-                                    'operator)
+  (cdtypst--check-all-symbols-defined cdtypst-math-symbol-letter-alist
+                                      'letter)
+  (cdtypst--check-all-symbols-defined cdtypst-math-symbol-operator-alist
+                                      'operator)
   (setq-local prettify-symbols-compose-predicate #'cdtypst--prettify-symbols-compose-predicate)
   (prettify-symbols-mode))
 
