@@ -59,7 +59,13 @@ executed."
   :group 'cdtypst
   :type '(repeat (function :tag "Function" :value nil)))
 
-(defvar typst-prettify-symbols-alist nil
+(defcustom cdtypst-prettify-symbols-alist-user
+  nil
+  "A list of extra `prettify-symbols-mode' entries provided by the user."
+  :group 'cdtypst
+  :type '(alist :key string :value character))
+
+(defvar cdtypst-prettify-symbols-alist nil
   "Alist containing all of the Unicode symbols for typst.")
 
 (defconst cdtypst--get-symbols-script
@@ -73,20 +79,21 @@ executed."
   (let ((node (treesit-node-at (or point (point)))))
     (treesit-parent-until node "math")))
 
-(defun cdtypst--prettify-p (&optional point)
-  (let* ((start (or point (point)))
-         (node (treesit-node-at start)))
+(defun cdtypst--prettify-p (start end)
+  (let ((node (treesit-node-at start)))
     (and (= start (treesit-node-start node))   ; Only prettify full symbols (not within),
-         (treesit-parent-until node "math")))) ; actually in math mode.
+         (<= (treesit-node-end node) end)      ; actually in math mode.
+         (treesit-parent-until node "math")))) 
 
 (defun cdtypst--prettify-symbols-compose-predicate (start end match)
-  (cdtypst--prettify-p start))
+  (cdtypst--prettify-p start end))
 
 (defun cdtypst--compute-symbols (&optional force)
   (unless (and cdtypst--get-symbols-status
                (not force))
-    (setq typst-prettify-symbols-alist
-          (read (shell-command-to-string cdtypst--get-symbols-script)))
+    (setq cdtypst-prettify-symbols-alist
+          (append (read (shell-command-to-string cdtypst--get-symbols-script))
+                  cdtypst-prettify-symbols-alist-user))
     (setq cdtypst--get-symbols-status t)))
 
 (defun cdtypst--ensure-math ()
@@ -147,7 +154,7 @@ reasonably expect that more input can be put in."
     (cond
      ((looking-at (rx ?\)))
       (backward-char 3)
-      (if (and (looking-at (rx (| ?_ ?^) ?\( (| ?- ?+ alphanumeric)))
+      (if (and (looking-at (rx (| ?_ ?^) ?\( anything))
                cdtypst-simplify-sub-superscripts)
           ;; simplify sub/super script
           (progn (forward-char 1)
@@ -201,7 +208,7 @@ reasonably expect that more input can be put in."
 (defun cdtypst--transient-parse-suffix (alist &optional insert-fn)
   (mapcar (pcase-lambda (`(,letter . ,name))
             (list (format "%c" letter)
-                  (let ((unicode (assoc name typst-prettify-symbols-alist)))
+                  (let ((unicode (assoc name cdtypst-prettify-symbols-alist)))
                     (if unicode (format "%c" (cdr unicode)) name))
                   (lambda (args)
                     (interactive (list (transient-args 'cdtypst--math-symbol-letter)))
@@ -291,10 +298,10 @@ inserted and the cursor positioned properly."
 
 (defun cdtypst--check-all-symbols-defined (syms alist)
   "Make sure all names defined in `syms' are actually present in
-`typst-prettify-symbols-alist'. `alist' is used for reporting an error
+`cdtypst-prettify-symbols-alist'. `alist' is used for reporting an error
 if a name is not found."
   (pcase-dolist (`(,_ . ,name) syms)
-    (unless (assoc name typst-prettify-symbols-alist)
+    (unless (assoc name cdtypst-prettify-symbols-alist)
       (user-error "Symbol '%s' undefined (%s)" name alist))))
 
 (defun turn-on-cdtypst ()
@@ -302,7 +309,7 @@ if a name is not found."
   (unless (eq major-mode 'typst-ts-mode)
     (user-error "Cannot enable cdtypst in non-typst buffer."))
   (cdtypst--compute-symbols)
-  (setq-local prettify-symbols-alist typst-prettify-symbols-alist)
+  (setq-local prettify-symbols-alist cdtypst-prettify-symbols-alist)
   (cdtypst--check-all-symbols-defined cdtypst-math-symbol-letter-alist
                                       'letter)
   (cdtypst--check-all-symbols-defined cdtypst-math-symbol-operator-alist
