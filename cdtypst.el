@@ -4,6 +4,10 @@
 (require 'treesit)
 (require 'prog-mode)
 
+(defgroup cdtypst nil
+  "Typst quality-of-life minor-mode."
+  :prefix "cdtypst-")
+
 (defcustom cdtypst-takeover-sub-superscript t
   "Non-nil means cdtypst is allowed to take over the ^ and _ keys."
   :group 'cdtypst
